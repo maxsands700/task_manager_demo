@@ -83,7 +83,17 @@ Open **pgAdmin4** and create a new database called `task_manager`:
 
 (The tables will be created automatically when you start the server.)
 
-### 2. Install dependencies
+### 2. Set up your environment variables
+
+The `.env.example` file contains the template for your database credentials. Copy it to create your own `.env` file:
+
+```bash
+cp .env.example .env
+```
+
+Then open `.env` in your editor and fill in your actual Postgres password. The `.env` file is listed in `.gitignore` so it will never be committed to Git — this keeps your password private.
+
+### 3. Install dependencies
 
 Open a terminal, navigate to the `backend/` folder, activate the virtual environment, and install:
 
@@ -98,7 +108,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Start the server
+### 4. Start the server
 
 ```bash
 uvicorn main:app --reload
@@ -111,7 +121,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 INFO:     Started reloader process
 ```
 
-### 4. Verify it works
+### 5. Verify it works
 
 Open your browser and go to: **http://localhost:8000**
 
