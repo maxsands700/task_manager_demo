@@ -35,12 +35,15 @@ KEY CONCEPT: What is a Router?
     the app grows.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import date
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Task
-from schemas import TaskCreate, TaskResponse
+from schemas import TaskCreate, TaskResponse, TaskUpdate
 
 # ---------------------------------------------------------------------------
 # Create the Router
@@ -67,12 +70,142 @@ router = APIRouter(prefix="/tasks", tags=["Tasks"])
 #   "please run get_db() and give me the result as 'db'."
 #   FastAPI handles creating the session before our function runs
 #   and closing it after our function finishes.
+#
+# KEY CONCEPT: Query parameters
+#   A "query parameter" is a filter you tack onto the end of a URL after a "?".
+#   Multiple parameters are separated by "&". For example:
+#       GET /tasks?min_date=2026-05-01
+#       GET /tasks?min_date=2026-05-01&something_else=foo
+#
+#   Unlike path parameters ({task_id}), query parameters are OPTIONAL by
+#   default when you give them a default value (like None below).
+#
+#   FastAPI reads the function argument "min_date: Optional[date] = None"
+#   and automatically:
+#     1. Looks for "min_date" in the URL's query string
+#     2. If present, parses it as a date (e.g., "2026-05-01" → date(2026, 5, 1))
+#     3. If the value isn't a valid date, returns a 422 error automatically
+#     4. If absent, uses None — meaning "don't filter by date"
+#
+#   Query(None, description=...) is optional — it just adds a helpful
+#   description to the auto-generated docs at /docs.
 # ---------------------------------------------------------------------------
 @router.get("/", response_model=list[TaskResponse])
-def get_all_tasks(db: Session = Depends(get_db)):
-    """Return every task in the database."""
-    tasks = db.query(Task).all()
-    return tasks
+def get_all_tasks(
+    db: Session = Depends(get_db),
+    min_date: Optional[date] = Query(
+        None,
+        description="Only return tasks with a due_date on or after this date (YYYY-MM-DD).",
+    ),
+    search: Optional[str] = Query(
+        None,
+        description="Only return tasks whose name contains this text (case-insensitive).",
+    ),
+    # -----------------------------------------------------------------------
+    # Sorting parameters
+    # -----------------------------------------------------------------------
+    # sort_by: which column to sort on. We use typing.Literal to restrict
+    #   the allowed values — FastAPI will automatically reject anything
+    #   that isn't one of these names with a clear 422 error.
+    #
+    #   WHY RESTRICT THE VALUES? If we let the client pass ANY string and
+    #   then did getattr(Task, sort_by), they could sneak in attribute
+    #   names we didn't intend (like internal SQLAlchemy methods). Always
+    #   whitelist when you're turning user input into column references.
+    #
+    # order: "asc" (ascending: A→Z, 1→9, oldest→newest) or
+    #        "desc" (descending: Z→A, 9→1, newest→oldest).
+    # -----------------------------------------------------------------------
+    sort_by: Literal["id", "name", "due_date", "created_at", "updated_at"] = Query(
+        "id",
+        description="Which column to sort by.",
+    ),
+    order: Literal["asc", "desc"] = Query(
+        "asc",
+        description="Sort direction — 'asc' (ascending) or 'desc' (descending).",
+    ),
+    # -----------------------------------------------------------------------
+    # Pagination parameters
+    # -----------------------------------------------------------------------
+    # KEY CONCEPT: What is pagination?
+    #   If your database has 10,000 tasks, you don't want to send all of
+    #   them back in a single response — it would be slow and use a lot of
+    #   memory on both server and client. Pagination lets the client ask
+    #   for one "page" at a time.
+    #
+    # limit: the MAXIMUM number of tasks to return in one response.
+    #   e.g., limit=20 means "give me at most 20 tasks".
+    #
+    # offset: how many tasks to SKIP before starting to return results.
+    #   This is how you get "the next page." To get:
+    #     Page 1 (tasks 1–20):   limit=20, offset=0
+    #     Page 2 (tasks 21–40):  limit=20, offset=20
+    #     Page 3 (tasks 41–60):  limit=20, offset=40
+    #   General formula: offset = (page_number - 1) * limit
+    #
+    # ge=0 / ge=1 / le=100:
+    #   FastAPI validates these at the edges. "ge" = "greater than or
+    #   equal to", "le" = "less than or equal to". So limit must be
+    #   between 1 and 100, and offset can't be negative. If a client
+    #   sends limit=9999, they get a 422 error instead of crashing our DB.
+    # -----------------------------------------------------------------------
+    limit: int = Query(
+        20,
+        ge=1,
+        le=100,
+        description="Maximum number of tasks to return (1–100).",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Number of tasks to skip before returning results.",
+    ),
+):
+    """Return tasks from the database, with optional filtering, sorting, and pagination."""
+    query = db.query(Task)
+
+    # If the client provided min_date, add a WHERE clause to filter the results.
+    # Task.due_date >= min_date becomes SQL like: WHERE due_date >= '2026-05-01'
+    # Tasks with a NULL due_date are excluded by this comparison (SQL NULLs
+    # never match a >= comparison), which is the behavior we want here.
+    if min_date is not None:
+        query = query.filter(Task.due_date >= min_date)
+
+    # If the client provided a search term, add a case-insensitive
+    # "contains" filter on the task name. ilike() is SQL's case-insensitive
+    # LIKE operator, and the "%" characters are wildcards meaning "any
+    # characters." So ilike("%milk%") matches "Buy milk", "MILK run",
+    # "almond milk", etc.
+    if search is not None:
+        query = query.filter(Task.name.ilike(f"%{search}%"))
+
+    # -----------------------------------------------------------------------
+    # Apply sorting
+    # -----------------------------------------------------------------------
+    # getattr(Task, "name") is the same as writing Task.name — it just lets
+    # us choose the column dynamically based on the string the client sent.
+    # Because we restricted sort_by to a Literal above, we know it's always
+    # a valid column name and this is safe.
+    #
+    # .asc() / .desc() are SQLAlchemy methods that turn a column into a
+    # sort expression. query.order_by(Task.name.asc()) becomes SQL like:
+    #   ORDER BY name ASC
+    # -----------------------------------------------------------------------
+    sort_column = getattr(Task, sort_by)
+    sort_expression = sort_column.asc() if order == "asc" else sort_column.desc()
+    query = query.order_by(sort_expression)
+
+    # -----------------------------------------------------------------------
+    # Apply pagination
+    # -----------------------------------------------------------------------
+    # .offset() and .limit() translate directly to SQL's OFFSET and LIMIT
+    # clauses. They must come AFTER order_by() so the "page" you get back
+    # is consistent — otherwise the database could return rows in any order
+    # and "page 2" wouldn't mean anything.
+    # -----------------------------------------------------------------------
+    query = query.offset(offset).limit(limit)
+
+    return query.all()
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +292,53 @@ def update_task(task_id: int, task_data: TaskCreate, db: Session = Depends(get_d
     for field, value in task_data.model_dump().items():
         setattr(task, field, value)
 
+    db.commit()
+    db.refresh(task)
+
+    return task
+
+
+# ---------------------------------------------------------------------------
+# PATCH /tasks/{task_id} — Partially update an existing task
+# ---------------------------------------------------------------------------
+# PATCH is PUT's more surgical sibling. Instead of requiring the client to
+# send the WHOLE task, PATCH lets them send only the fields they want to
+# change.
+#
+# Compare the two:
+#   PUT   /tasks/5  body: {"name": "Buy oat milk", "due_date": "2026-04-22"}
+#                   → replaces the whole task (must include every field)
+#   PATCH /tasks/5  body: {"name": "Buy oat milk"}
+#                   → only updates "name", leaves "due_date" unchanged
+#
+# The key trick below is model_dump(exclude_unset=True):
+#   - model_dump() normally returns a dict of ALL fields in the schema,
+#     filling in defaults for any the client didn't send.
+#   - exclude_unset=True tells Pydantic: "only include fields the client
+#     ACTUALLY sent in the JSON body."
+#   That's exactly what we want for PATCH — if the client didn't mention
+#   "due_date", we don't want to touch it.
+# ---------------------------------------------------------------------------
+@router.patch("/{task_id}", response_model=TaskResponse)
+def patch_task(task_id: int, task_data: TaskUpdate, db: Session = Depends(get_db)):
+    """Partially update an existing task — only the fields the client sends will change."""
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Get only the fields the client actually provided in the request body.
+    # If they sent {"name": "New"}, update_data will be {"name": "New"} —
+    # "due_date" is NOT in the dict, so we won't touch it.
+    update_data = task_data.model_dump(exclude_unset=True)
+
+    # Same setattr loop as PUT, but now it only iterates over fields the
+    # client sent. Untouched fields on the existing task keep their values.
+    for field, value in update_data.items():
+        setattr(task, field, value)
+
+    # Note: we don't need to manually set updated_at here — the model has
+    # onupdate=func.now() on that column, so SQLAlchemy updates it for us
+    # automatically when we commit.
     db.commit()
     db.refresh(task)
 

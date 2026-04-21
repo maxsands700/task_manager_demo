@@ -37,7 +37,7 @@ KEY CONCEPT: What is Pydantic?
     FastAPI uses Pydantic under the hood — they're designed to work together.
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
@@ -58,10 +58,45 @@ class TaskCreate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# TaskUpdate — The shape of data when PARTIALLY UPDATING a task (PATCH)
+# ---------------------------------------------------------------------------
+# This schema looks almost identical to TaskCreate, but EVERY field is
+# optional. That's the whole point of PATCH: the client only sends the
+# fields they want to change, and leaves the rest alone.
+#
+# KEY CONCEPT: PUT vs PATCH
+#   PUT   = "Replace the whole resource." Client must send ALL fields.
+#           If they forget one, it gets wiped (or fails validation).
+#   PATCH = "Change only these specific fields." Client sends just the
+#           fields they want to update. Everything else stays as-is.
+#
+#   Example — a task currently has name="Buy milk", due_date="2026-04-20":
+#     PATCH body {"name": "Buy oat milk"}
+#       → name becomes "Buy oat milk", due_date stays "2026-04-20"
+#     PUT body {"name": "Buy oat milk"}
+#       → name becomes "Buy oat milk", due_date gets wiped to None
+#         (because the client didn't include it)
+#
+# Why the fields default to None:
+#   If a client omits a field from the JSON body, Pydantic uses the default
+#   (None). In the endpoint we'll use .model_dump(exclude_unset=True) to
+#   tell the difference between "client sent null on purpose" and "client
+#   didn't send this field at all."
+# ---------------------------------------------------------------------------
+class TaskUpdate(BaseModel):
+    name: Optional[str] = None
+    due_date: Optional[date] = None
+
+
+# ---------------------------------------------------------------------------
 # TaskResponse — The shape of data we SEND BACK to the client
 # ---------------------------------------------------------------------------
 # This includes the "id" field because once a task exists in the database,
 # the client needs to know its ID (to update or delete it later).
+#
+# It also includes created_at and updated_at so the client can see WHEN a
+# task was made and last changed. These come straight from the database —
+# we never accept them in a request body; they're server-generated.
 #
 # model_config = ConfigDict(from_attributes=True)
 #   This is a Pydantic setting that tells it: "When converting a SQLAlchemy
@@ -78,3 +113,5 @@ class TaskResponse(BaseModel):
     id: int
     name: str
     due_date: Optional[date] = None
+    created_at: datetime
+    updated_at: datetime

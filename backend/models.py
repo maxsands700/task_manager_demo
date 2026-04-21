@@ -27,9 +27,9 @@ KEY CONCEPT: Why define tables in Python instead of just using SQL?
     3. Keep your table structure in version control (Git) alongside your code
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
-from sqlalchemy import Integer, String, Date
+from sqlalchemy import Integer, String, Date, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
 
@@ -77,3 +77,58 @@ class Task(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+
+    # -----------------------------------------------------------------------
+    # Timestamps: created_at and updated_at
+    # -----------------------------------------------------------------------
+    # Almost every real-world database table has these two columns. They let
+    # you answer questions like "when was this task created?" or "sort tasks
+    # by most recently edited" without having to write that logic yourself.
+    #
+    # DateTime(timezone=True):
+    #   Stores a full timestamp (year, month, day, hour, minute, second)
+    #   INCLUDING timezone info. Always use timezone-aware timestamps in a
+    #   real app — otherwise you'll eventually hit bugs where a user in
+    #   New York sees a time that was actually recorded in UTC.
+    #
+    # server_default=func.now():
+    #   "When a new row is inserted, ask the DATABASE for the current time
+    #   and use it as the default."
+    #   func.now() becomes SQL's NOW() function — so Postgres itself fills
+    #   in the value. This is better than filling it in from Python because:
+    #     1. Every row gets a consistent time from one clock (the DB's)
+    #     2. You can't forget to set it — the DB enforces it for you
+    #
+    # onupdate=func.now() (on updated_at only):
+    #   "Every time this row is UPDATED via SQLAlchemy, set this column to
+    #   the current time." This is what makes updated_at automatically
+    #   refresh whenever we edit a task. You don't have to remember to
+    #   update it yourself in your endpoint code.
+    #
+    # nullable=False:
+    #   These columns are never empty. The database enforces that.
+    #
+    # IMPORTANT — EXISTING DATABASES:
+    #   Since this project uses Base.metadata.create_all() (which only
+    #   CREATES tables, it doesn't ALTER existing ones), adding these
+    #   columns won't automatically show up if your "tasks" table already
+    #   exists. You'll either need to:
+    #     (a) Drop the tasks table in pgAdmin so the app recreates it, OR
+    #     (b) Run this SQL in pgAdmin to add the columns manually:
+    #         ALTER TABLE tasks
+    #           ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    #           ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    #   Later you'll learn about Alembic, which handles these "migrations"
+    #   automatically.
+    # -----------------------------------------------------------------------
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
